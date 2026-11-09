@@ -1,0 +1,236 @@
+# EJECUTOR PÚBLICO DEL COMITÉ v3 — PROPUESTA, NO ACTIVA (docs/propuestas/ACTIONS_CORRIDA_COMITE_20261108.md §8 y §9).
+# Va en un repositorio PÚBLICO separado que solo contiene este flujo (copiado LITERALMENTE a .github/workflows/comite.yml),
+# autorizados.txt y un README, y en el que NINGUNA sesión de IA tiene acceso. Los registros de un repositorio público son PÚBLICOS:
+# este flujo no publica artefactos, silencia el error estándar de cada orden, imprime solo códigos «ESTADO|…» y, ante cualquier
+# fallo inesperado, solo «ESTADO|ERROR_INESPERADO».
+# AUTORIZACIÓN = tres cosas ligadas entre sí: (1) el SHA del comité, (2) la huella SHA-256 de ESTE archivo tal como corre y
+# (3) la aprobación del propietario en «Review deployments». Cada línea de autorizados.txt trae «<sha comité> <sha256 de este flujo>».
+# Un flujo modificado después de la auditoría cambia de huella y deja de coincidir; además el guion del comité exige que el flujo en
+# ejecución sea idéntico al copiado en el commit autorizado. El primer trabajo (sin entorno ni secretos) imprime las huellas ANTES de
+# que el propietario apruebe, para que las compare con la auditoría. Residual: quien pueda editar a la vez este flujo y
+# autorizados.txt puede lanzar otro código; por eso el repositorio ejecutor es solo del propietario (ver §9).
+# DOS entornos, ambos con revisor obligatorio = el propietario (SIN «Prevent self-reviews», porque el propietario lanza y aprueba) y
+# ramas de despliegue = solo main. El modo elige el entorno del trabajo «corrida»:
+#   «comite-aislamiento» (modo aislamiento): solo COMITE_LECTURA_TOKEN y COMITE_REPO; NO existe ahí la clave de Anthropic.
+#   «comite-modelos» (modo corrida): además ANTHROPIC_API_KEY (tope mensual en la consola).
+#   COMITE_LECTURA_TOKEN: acceso detallado, solo lectura de «Contents» del repositorio privado, caducidad corta; COMITE_REPO:
+#   «dueño/repositorio» (enmascarado en el registro). Así la primera prueba, sin clave y sin gasto, ejerce el mismo mecanismo de
+#   aprobación que la corrida y la clave no está disponible para el trabajo en ese modo.
+name: Comité - corrida aprobada por el propietario
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit del comité (40 hexadecimales; debe estar en autorizados.txt junto a la huella de este flujo)"
+        required: true
+        type: string
+      modo:
+        description: "aislamiento = prueba sin modelo ni gasto; corrida = con modelos"
+        type: choice
+        options: [aislamiento, corrida]
+        default: aislamiento
+      caso:
+        description: "Caso sintético"
+        type: choice
+        options: [SYN-RP-20261101-A, SYN-RP-20261101-B]
+        default: SYN-RP-20261101-A
+      tope:
+        description: "Tope por corrida en USD (máximo 3)"
+        type: choice
+        options: ["3", "2", "1"]
+        default: "3"
+permissions:
+  contents: read
+concurrency:
+  group: comite-corrida
+  cancel-in-progress: false
+jobs:
+  huellas:
+    # Sin entorno y sin secretos: se ejecuta antes de la aprobación y deja a la vista lo que se va a autorizar.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      flujo: ${{ steps.h.outputs.flujo }}
+      autorizados: ${{ steps.h.outputs.autorizados }}
+      entorno: ${{ steps.e.outputs.entorno }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Huellas y autorización (sin secretos)
+        id: h
+        env:
+          SHA_PEDIDO: ${{ inputs.sha }}
+          EVENTO: ${{ github.event_name }}
+          RAMA: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          DUENO: ${{ github.repository_owner }}
+          INTENTO: ${{ github.run_attempt }}
+        run: |
+          exec 2>/dev/null
+          set -Eeuo pipefail
+          trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
+          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$ACTOR" == "$DUENO" && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          [[ "$SHA_PEDIDO" =~ ^[0-9a-f]{40}$ ]] || { echo "ESTADO|SHA_FORMATO"; exit 64; }
+          HF="$(sha256sum .github/workflows/comite.yml | cut -d' ' -f1)"
+          HA="$(sha256sum autorizados.txt | cut -d' ' -f1)"
+          echo "ESTADO|HUELLA_FLUJO|$HF"
+          echo "ESTADO|HUELLA_AUTORIZADOS|$HA"
+          grep -Eq "^${SHA_PEDIDO} ${HF}([[:space:]]|\$)" autorizados.txt || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
+          echo "ESTADO|AUTORIZADO"
+          echo "flujo=$HF" >> "$GITHUB_OUTPUT"
+          echo "autorizados=$HA" >> "$GITHUB_OUTPUT"
+      - name: Protección efectiva del entorno y de main (solo lectura)
+        id: e
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DUENO: ${{ github.repository_owner }}
+          RJ_MODO: ${{ inputs.modo }}
+          ENTORNO: ${{ inputs.modo == 'corrida' && 'comite-modelos' || 'comite-aislamiento' }}
+        run: |
+          exec 2>/dev/null
+          set -Eeuo pipefail
+          trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
+          D="$RUNNER_TEMP/proteccion"; mkdir -p "$D"
+          for par in "environments/$ENTORNO:env" "environments/$ENTORNO/deployment-branch-policies:ramas" "rules/branches/main:reglas"; do
+            gh api "repos/$REPO/${par%%:*}" > "$D/${par##*:}.json" 2>/dev/null || echo '{}' > "$D/${par##*:}.json"
+          done
+          ESTADOS="$(python3 -I - "$D" "$DUENO" <<'PY'
+          import json, sys
+          d, dueno = sys.argv[1], sys.argv[2].lower()
+          def leer(n):
+              try:
+                  return json.load(open(f"{d}/{n}.json"))
+              except Exception:
+                  return {}
+          env, ramas, reglas = leer("env"), leer("ramas"), leer("reglas")
+          rev = auto = rama = regla = "NO_COMPROBABLE"
+          admin = "DESCONOCIDO"
+          if isinstance(env, dict) and isinstance(env.get("protection_rules"), list):
+              rr = [r for r in env["protection_rules"] if isinstance(r, dict) and r.get("type") == "required_reviewers"]
+              revs = [x for r in rr for x in (r.get("reviewers") or []) if isinstance(x, dict)]
+              # Revisores EXACTAMENTE = el propietario (usuario). Cualquier otro usuario o equipo puede aprobar una corrida: FALLA.
+              ok = bool(revs) and all(x.get("type") == "User" and ((x.get("reviewer") or {}).get("login") or "").lower() == dueno and (x.get("reviewer") or {}).get("type") == "User" for x in revs)
+              rev = "OK" if ok else "FALLA"
+              # «Prevent self-reviews» activado + propietario como único revisor = nadie puede aprobar (bloqueo, no fuga): FALLA para avisar antes.
+              # Campo ausente o no booleano => no comprobable (no se presume «autorrevisión permitida»).
+              auto = "FALLA" if any(r.get("prevent_self_review") is True for r in rr) else ("OK" if rr and all(isinstance(r.get("prevent_self_review"), bool) for r in rr) else "NO_COMPROBABLE")
+              if isinstance(env.get("can_admins_bypass"), bool):
+                  admin = "PERMITIDO" if env["can_admins_bypass"] else "NO_PERMITIDO"
+              pol = env.get("deployment_branch_policy") or {}
+              if isinstance(ramas, dict) and isinstance(ramas.get("branch_policies"), list):
+                  nombres = sorted(b.get("name") for b in ramas["branch_policies"] if isinstance(b, dict) and b.get("type", "branch") == "branch")
+                  otros = [b for b in ramas["branch_policies"] if not isinstance(b, dict) or b.get("type", "branch") != "branch"]
+                  rama = "OK" if pol.get("custom_branch_policies") is True and pol.get("protected_branches") is False and nombres == ["main"] and not otros else "FALLA"
+                  # Sin «type» no se distingue rama de etiqueta (el ejemplo oficial de GitHub lo omite): no comprobable.
+                  if any(not isinstance(b, dict) or "type" not in b for b in ramas["branch_policies"]) and rama != "FALLA":
+                      rama = "NO_COMPROBABLE"
+          if isinstance(reglas, list):
+              tipos = {r.get("type") for r in reglas if isinstance(r, dict)}
+              regla = "OK" if {"non_fast_forward", "deletion", "update"} <= tipos else "FALLA"
+          print(f"ENTORNO_REVISOR|{rev}\nENTORNO_AUTOREVISION|{auto}\nENTORNO_RAMAS|{rama}\nREGLA_MAIN|{regla}\nENTORNO_ADMIN|{admin}")
+          PY
+          )"
+          while IFS= read -r l; do echo "ESTADO|$l"; done <<< "$ESTADOS"
+          if [[ "$ESTADOS" == *FALLA* || "$ESTADOS" == *NO_COMPROBABLE* ]]; then
+            echo "entorno=NO" >> "$GITHUB_OUTPUT"
+            [[ "$RJ_MODO" != corrida ]] || { echo "ESTADO|PROTECCION_INSUFICIENTE"; exit 64; }
+          else
+            echo "entorno=OK" >> "$GITHUB_OUTPUT"
+          fi
+  corrida:
+    needs: huellas
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.modo == 'corrida' && 'comite-modelos' || 'comite-aislamiento' }}
+    timeout-minutes: 30
+    steps:
+      - name: Repositorio ejecutor
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Revalidar la autorización (antes de usar ningún secreto)
+        env:
+          SHA_PEDIDO: ${{ inputs.sha }}
+          EVENTO: ${{ github.event_name }}
+          RAMA: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          DUENO: ${{ github.repository_owner }}
+          INTENTO: ${{ github.run_attempt }}
+          FLUJO_APROBADO: ${{ needs.huellas.outputs.flujo }}
+          AUTORIZADOS_APROBADO: ${{ needs.huellas.outputs.autorizados }}
+        run: |
+          exec 2>/dev/null
+          set -Eeuo pipefail
+          trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
+          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$ACTOR" == "$DUENO" && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          [[ "$SHA_PEDIDO" =~ ^[0-9a-f]{40}$ ]] || { echo "ESTADO|SHA_FORMATO"; exit 64; }
+          HF="$(sha256sum .github/workflows/comite.yml | cut -d' ' -f1)"
+          HA="$(sha256sum autorizados.txt | cut -d' ' -f1)"
+          [[ "$HF" == "$FLUJO_APROBADO" && "$HA" == "$AUTORIZADOS_APROBADO" ]] || { echo "ESTADO|HUELLA_CAMBIADA"; exit 64; }
+          grep -Eq "^${SHA_PEDIDO} ${HF}([[:space:]]|\$)" autorizados.txt || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
+          echo "ESTADO|AUTORIZADO"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Descargar el comité privado (sin imprimir nada)
+        env:
+          SHA_PEDIDO: ${{ inputs.sha }}
+          COMITE_LECTURA_TOKEN: ${{ secrets.COMITE_LECTURA_TOKEN }}
+          COMITE_REPO: ${{ secrets.COMITE_REPO }}
+        run: |
+          exec 2>/dev/null
+          umask 077
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$COMITE_LECTURA_TOKEN" | base64 -w0)"
+          { mkdir comite && git -C comite init -q \
+            && git -C comite fetch -q --depth 1 "https://github.com/${COMITE_REPO}.git" "$SHA_PEDIDO" \
+            && git -C comite checkout -q --detach FETCH_HEAD \
+            && [ "$(git -C comite rev-parse HEAD)" = "$SHA_PEDIDO" ] \
+            && [ "$(git -C comite cat-file -t "$SHA_PEDIDO")" = commit ]; } > /dev/null 2>&1 \
+            || { rm -rf comite; echo "ESTADO|ERROR_DESCARGA"; exit 66; }
+          echo "ESTADO|DESCARGA_OK"
+      - name: Dependencias
+        env:
+          RJ_MODO: ${{ inputs.modo }}
+        run: |
+          exec 2>/dev/null
+          { python -m pip install --quiet --disable-pip-version-check jsonschema referencing cryptography \
+            && { [ "$RJ_MODO" != corrida ] || npm install --silent -g @anthropic-ai/claude-code@2.1.319; }; } > /dev/null 2>&1 \
+            || { rm -rf comite; echo "ESTADO|ERROR_DEPENDENCIAS"; exit 66; }
+          echo "ESTADO|DEPENDENCIAS_OK"
+      - name: Prueba de aislamiento o corrida (solo se imprime el estado mínimo)
+        env:
+          ANTHROPIC_API_KEY: ${{ inputs.modo == 'corrida' && secrets.ANTHROPIC_API_KEY || '' }}
+          COMITE_SHA: ${{ inputs.sha }}
+          COMITE_DIR: ${{ github.workspace }}/comite
+          RJ_WORKFLOW_FILE: ${{ github.workspace }}/.github/workflows/comite.yml
+          RJ_MODO: ${{ inputs.modo }}
+          RJ_CASO: ${{ inputs.caso }}
+          RJ_TOPE: ${{ inputs.tope }}
+          RJ_SALIDA: ${{ runner.temp }}/rp-salida
+        run: |
+          exec 2>/dev/null
+          set +e
+          bash comite/ensayo/actions/corrida_comite_actions.sh > "$RUNNER_TEMP/salida.log" 2>&1
+          rc=$?
+          rm -rf comite
+          linea="$({ tr -d '\n' < "$RJ_SALIDA/estado_minimo.json"; } 2>/dev/null)"
+          if [[ "$linea" =~ ^\{[][A-Za-z0-9_\":,.{}\ -]{1,1500}\}$ ]]; then
+            echo "$linea"; echo "$linea" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ESTADO|SIN_ESTADO"
+          fi
+          echo "ESTADO|RC|$rc"
+          exit $rc
+      - name: Limpieza
+        if: always()
+        run: |
+          exec 2>/dev/null
+          rm -rf comite "$RUNNER_TEMP/rp-salida" "$RUNNER_TEMP/salida.log" /tmp/rp-comite-* /tmp/rp-pristino-* /tmp/rp-datos-*
+          sudo -n pkill -KILL -u rjagente || true
+          sudo -n userdel -r rjagente || true
+          echo "ESTADO|LIMPIEZA"
