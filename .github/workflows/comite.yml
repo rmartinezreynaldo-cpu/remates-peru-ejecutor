@@ -140,6 +140,16 @@ jobs:
             echo "entorno=NO" >> "$GITHUB_OUTPUT"
             [[ "$RJ_MODO" != corrida ]] || { echo "ESTADO|PROTECCION_INSUFICIENTE"; exit 64; }
           else
+            # Con modelos, los administradores NO pueden omitir la aprobación del entorno: exactamente UNA línea
+            # ENTORNO_ADMIN y que sea NO_PERMITIDO. PERMITIDO, DESCONOCIDO (campo ausente) o una línea repetida bloquean
+            # antes de cualquier secreto. En aislamiento (sin clave) solo se informa.
+            if [[ "$RJ_MODO" == corrida ]]; then
+              n_admin="$(grep -c '^ENTORNO_ADMIN|' <<< "$ESTADOS" || true)"
+              if [[ "$n_admin" != 1 ]] || ! grep -Fxq 'ENTORNO_ADMIN|NO_PERMITIDO' <<< "$ESTADOS"; then
+                echo "entorno=NO" >> "$GITHUB_OUTPUT"
+                echo "ESTADO|PROTECCION_INSUFICIENTE"; exit 64
+              fi
+            fi
             echo "entorno=OK" >> "$GITHUB_OUTPUT"
           fi
   corrida:
