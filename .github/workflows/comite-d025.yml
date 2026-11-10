@@ -1,10 +1,11 @@
 # D-025 — EJECUTOR DEL DICTAMEN COMPLETO (BORRADOR, NO ACTIVO). Rama aislada + PR en borrador; nada de esto toca main ni comite.yml.
 # Solo MODO SINTÉTICO: ejecuta la autoprueba del ejecutor del comité (12 roles sintéticos, puntos de control, cancelación, caída y
 # reanudación, repetición idempotente, autorización adulterada) SIN modelos, SIN gasto, SIN red y SIN la clave de Anthropic.
-# MODO REAL (modelos pagados, despacho desde la aplicación, reporte a /api/committee/report, sellado y entrega): NO HABILITADO aquí. Se
-# rechaza antes de cualquier entorno o secreto. Para habilitarlo harán falta, con autorización expresa del propietario: auditoría
-# independiente de este flujo, entorno «comite-modelos» con su aprobación personal, clave de firma del comité y clave pública del propietario
-# como secretos del entorno, URL de reporte, y un libro de consumo en un repositorio privado con token de mínimo privilegio.
+# MODOS: «sintetico» (autoprueba sin modelos), «sonda_libro» (prueba en vivo del libro distribuido; entorno «comite-libro»; sin modelos) y «real»
+# (12 agentes con modelos pagados; entorno «comite-modelos» con la aprobación PERSONAL del propietario). «real» y «sonda_libro» solo corren si
+# autorizados-d025.txt trae una línea «<sha> <huella> <modo>-<n>» para ESE modo (hoy el archivo está vacío: todo rechaza) y, en «real», además
+# se escribe la confirmación literal GASTAR-CON-MODELOS. AVISO: el modo real aún NO reutiliza el aislamiento de red y de usuario de comite.yml
+# (corrida_comite_actions.sh); integrarlo y auditarlo es requisito previo a autorizar ninguna línea «real».
 # Igual que comite.yml: repositorio público => solo se imprimen líneas «ESTADO|…»; sin artefactos; autorización por huella en
 # autorizados-d025.txt (vacío = nada autorizado); solo main; solo el propietario; intento 1.
 name: Comité D-025 - autoprueba sintética del ejecutor
@@ -17,10 +18,25 @@ on:
         required: true
         type: string
       modo:
-        description: "sintetico = autoprueba sin modelos ni gasto (real NO está habilitado en este flujo)"
+        description: "sintetico = autoprueba sin modelos; sonda_libro = prueba del libro (sin modelos); real = 12 agentes con modelos (gasto)"
         type: choice
-        options: [sintetico, real]
+        options: [sintetico, sonda_libro, real]
         default: sintetico
+      confirmacion:
+        description: "Solo para modo real: escribir GASTAR-CON-MODELOS"
+        required: false
+        type: string
+        default: ""
+      despacho_b64:
+        description: "Solo para modo real: DESPACHO-V1 en base64 (lo genera la aplicación)"
+        required: false
+        type: string
+        default: ""
+      caso_id:
+        description: "Solo para modo real: identificador del caso ficticio (SYN-…)"
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
@@ -47,27 +63,33 @@ jobs:
           ACTOR: ${{ github.actor }}
           DUENO: ${{ github.repository_owner }}
           INTENTO: ${{ github.run_attempt }}
+          CONFIRMACION: ${{ inputs.confirmacion }}
+          DESPACHO_PEDIDO: ${{ inputs.despacho_b64 }}
+          CASO_PEDIDO: ${{ inputs.caso_id }}
         run: |
           exec 2>/dev/null
           set -Eeuo pipefail
           trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
           [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
           [[ "$ACTOR" == "$DUENO" ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
-          [[ "$MODO_PEDIDO" == sintetico ]] || { echo "ESTADO|MODO_REAL_NO_HABILITADO"; exit 64; }
+          [[ "$MODO_PEDIDO" == sintetico || "$MODO_PEDIDO" == sonda_libro || "$MODO_PEDIDO" == real ]] || { echo "ESTADO|MODO_INVALIDO"; exit 64; }
+          if [[ "$MODO_PEDIDO" == real ]]; then
+            [[ "$CONFIRMACION" == GASTAR-CON-MODELOS && -n "$DESPACHO_PEDIDO" && "$CASO_PEDIDO" =~ ^SYN-[A-Za-z0-9._-]{1,70}$ ]] || { echo "ESTADO|REAL_SIN_CONFIRMACION"; exit 64; }
+          fi
           [[ "$SHA_PEDIDO" =~ ^[0-9a-f]{40}$ ]] || { echo "ESTADO|SHA_FORMATO"; exit 64; }
           HF="$(sha256sum .github/workflows/comite-d025.yml | cut -d' ' -f1)"
           HA="$(sha256sum autorizados-d025.txt | cut -d' ' -f1)"
           echo "ESTADO|HUELLA_FLUJO|$HF"
           echo "ESTADO|HUELLA_AUTORIZADOS|$HA"
-          AUT="$(awk -v s="$SHA_PEDIDO" -v h="$HF" '$1 == s && $2 == h { if (NF != 3 || $3 !~ /^sintetico-[0-9]+$/ || $0 ~ /[\t\r]/) mal++; else ok++ } END { print ok + 0, mal + 0 }' autorizados-d025.txt)"
+          AUT="$(awk -v s="$SHA_PEDIDO" -v h="$HF" -v m="$MODO_PEDIDO" '$1 == s && $2 == h { if (NF != 3 || $3 !~ /^(sintetico|sonda_libro|real)-[0-9]+$/ || $0 ~ /[\t\r]/) mal++; else if ($3 ~ ("^" m "-")) ok++ } END { print ok + 0, mal + 0 }' autorizados-d025.txt)"
           [[ "$AUT" == "1 0" ]] || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
           echo "ESTADO|AUTORIZADO"
           echo "flujo=$HF" >> "$GITHUB_OUTPUT"
           echo "autorizados=$HA" >> "$GITHUB_OUTPUT"
-  autoprueba:
+  ejecutor:
     needs: huellas
     runs-on: ubuntu-latest
-    environment: comite-aislamiento
+    environment: ${{ inputs.modo == 'real' && 'comite-modelos' || inputs.modo == 'sonda_libro' && 'comite-libro' || 'comite-aislamiento' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +105,6 @@ jobs:
           exec 2>/dev/null
           set -Eeuo pipefail
           trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
-          [[ "$MODO_PEDIDO" == sintetico ]] || { echo "ESTADO|MODO_REAL_NO_HABILITADO"; exit 64; }
           [[ "$(sha256sum .github/workflows/comite-d025.yml | cut -d' ' -f1)" == "$FLUJO_APROBADO" && "$(sha256sum autorizados-d025.txt | cut -d' ' -f1)" == "$AUTORIZADOS_APROBADO" ]] || { echo "ESTADO|HUELLA_CAMBIADA"; exit 64; }
           echo "ESTADO|AUTORIZADO"
       - uses: actions/setup-python@v5
@@ -112,10 +133,54 @@ jobs:
             || { rm -rf comite; echo "ESTADO|ERROR_DEPENDENCIAS"; exit 66; }
           echo "ESTADO|DEPENDENCIAS_OK"
       - name: Autoprueba sintética (solo líneas ESTADO; sin clave de Anthropic, sin red)
+        if: ${{ inputs.modo == 'sintetico' }}
         run: |
           exec 2>/dev/null
           set +e
           python3 -I -B comite/ensayo/e2e/autoprueba_ejecutor.py 2>/dev/null | grep -E '^ESTADO\|[A-Z_]{3,40}\|(OK|FALLA)$|^ESTADO\|ERROR_INESPERADO$'
+          rc=${PIPESTATUS[0]}
+          rm -rf comite
+          echo "ESTADO|RC|$rc"
+          exit $rc
+      - name: Sonda del libro distribuido (sin modelos; solo líneas ESTADO)
+        if: ${{ inputs.modo == 'sonda_libro' }}
+        env:
+          LIBRO_REPO: ${{ secrets.LIBRO_REPO }}
+          LIBRO_TOKEN: ${{ secrets.LIBRO_TOKEN }}
+          LIBRO_SHA_BASE: ${{ secrets.LIBRO_SHA_BASE }}
+        run: |
+          exec 2>/dev/null
+          set +e
+          python3 -I -B comite/integracion/libro_repo/sonda_libro.py todo 2>/dev/null | grep -E '^ESTADO\|[A-Z_]{3,40}\|' 
+          rc=${PIPESTATUS[0]}
+          rm -rf comite
+          echo "ESTADO|RC|$rc"
+          exit $rc
+      - name: Corrida REAL de los 12 agentes (gasto; solo líneas ESTADO)
+        if: ${{ inputs.modo == 'real' }}
+        env:
+          RJ_MODELOS_APROBADOS: '1'                       # SOLO aquí, en el entorno «comite-modelos» aprobado por el propietario
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DESPACHO_B64: ${{ inputs.despacho_b64 }}
+          COMITE_SHA: ${{ inputs.sha }}
+          REGISTRO_JSON: ${{ secrets.REGISTRO_JSON }}
+          COMITE_FIRMA_PEM_B64: ${{ secrets.COMITE_FIRMA_PEM_B64 }}
+          COMITE_FIRMA_ID: ${{ secrets.COMITE_FIRMA_ID }}
+          CK_HEX: ${{ secrets.CK_HEX }}
+          LIBRO_REPO: ${{ secrets.LIBRO_REPO }}
+          LIBRO_TOKEN: ${{ secrets.LIBRO_TOKEN }}
+          LIBRO_SHA_BASE: ${{ secrets.LIBRO_SHA_BASE }}
+          REPORT_URL: ${{ secrets.REPORT_URL }}
+          REPORT_BEARER: ${{ secrets.REPORT_BEARER }}
+          RJ_CASO_ID: ${{ inputs.caso_id }}
+          RJ_TOPE_ROL_USD: '0.50'
+          RJ_RAIZ: ${{ github.workspace }}/comite
+        run: |
+          exec 2>/dev/null
+          set +e
+          npm install --silent -g @anthropic-ai/claude-code@2.1.319 > /dev/null 2>&1 || { echo "ESTADO|ERROR_DEPENDENCIAS"; rm -rf comite; exit 66; }
+          python3 -I -B comite/ensayo/real/preparar_expediente_ficticio.py --preparar "$RJ_RAIZ" "$RJ_CASO_ID" > /dev/null 2>&1 || { echo "ESTADO|ERROR_EXPEDIENTE"; rm -rf comite; exit 66; }
+          python3 -I -B comite/integracion/ejecutor_real_cli.py 2>/dev/null | grep -E '^ESTADO\|[A-Za-z0-9_|=.-]{3,120}$'
           rc=${PIPESTATUS[0]}
           rm -rf comite
           echo "ESTADO|RC|$rc"
