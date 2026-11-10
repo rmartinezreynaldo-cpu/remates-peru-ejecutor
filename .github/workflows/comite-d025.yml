@@ -4,8 +4,9 @@
 # MODOS: «sintetico» (autoprueba sin modelos), «sonda_libro» (prueba en vivo del libro distribuido; entorno «comite-libro»; sin modelos) y «real»
 # (12 agentes con modelos pagados; entorno «comite-modelos» con la aprobación PERSONAL del propietario). «real» y «sonda_libro» solo corren si
 # autorizados-d025.txt trae una línea «<sha> <huella> <modo>-<n>» para ESE modo (hoy el archivo está vacío: todo rechaza) y, en «real», además
-# se escribe la confirmación literal GASTAR-CON-MODELOS. AVISO: el modo real aún NO reutiliza el aislamiento de red y de usuario de comite.yml
-# (corrida_comite_actions.sh); integrarlo y auditarlo es requisito previo a autorizar ninguna línea «real».
+# se escribe la confirmación literal GASTAR-CON-MODELOS. El modo real ahora se lanza SOLO por comite/ensayo/actions/corrida_real_d025.sh (usuario dedicado, red limitada, no_new_privs, gate de
+# aislamiento; mismas piezas que comite.yml). Está PREPARADO Y NO VERIFICADO en un runner real: la prueba de aislamiento (modo aislamiento) debe
+# pasar en Actions y la auditoría independiente cerrarse antes de autorizar ninguna línea «real».
 # Igual que comite.yml: repositorio público => solo se imprimen líneas «ESTADO|…»; sin artefactos; autorización por huella en
 # autorizados-d025.txt (vacío = nada autorizado); solo main; solo el propietario; intento 1.
 name: Comité D-025 - autoprueba sintética del ejecutor
@@ -179,8 +180,8 @@ jobs:
           exec 2>/dev/null
           set +e
           npm install --silent -g @anthropic-ai/claude-code@2.1.319 > /dev/null 2>&1 || { echo "ESTADO|ERROR_DEPENDENCIAS"; rm -rf comite; exit 66; }
-          python3 -I -B comite/ensayo/real/preparar_expediente_ficticio.py --preparar "$RJ_RAIZ" "$RJ_CASO_ID" > /dev/null 2>&1 || { echo "ESTADO|ERROR_EXPEDIENTE"; rm -rf comite; exit 66; }
-          python3 -I -B comite/integracion/ejecutor_real_cli.py 2>/dev/null | grep -E '^ESTADO\|[A-Za-z0-9_|=.-]{3,120}$'
+          export COMITE_DIR="$RJ_RAIZ" GITHUB_ACTIONS=true
+          bash comite/ensayo/actions/corrida_real_d025.sh 2>/dev/null | grep -E '^ESTADO\|[A-Za-z0-9_|=.-]{3,120}$'
           rc=${PIPESTATUS[0]}
           rm -rf comite
           echo "ESTADO|RC|$rc"
