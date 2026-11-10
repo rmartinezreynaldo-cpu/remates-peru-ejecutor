@@ -1,3 +1,6 @@
+# v4 — AUTORIZACIÓN POR MODO (10/11/2026; auditoría independiente E-20261110-CHATGPT, PR #43): cada línea de autorizados.txt es
+# «<sha> <huella> <modo>-<n>» con modo aislamiento|corrida y SOLO autoriza ese modo; una línea mal formada o duplicada para el par
+# sha+huella rechaza. Migración y reversión (que nunca reactiva autorizaciones antiguas): MIGRACION_AUTORIZACION_POR_MODO_20261110.md.
 # EJECUTOR PÚBLICO DEL COMITÉ v3 — PROPUESTA, NO ACTIVA (docs/propuestas/ACTIONS_CORRIDA_COMITE_20261108.md §8 y §9).
 # Va en un repositorio PÚBLICO separado que solo contiene este flujo (copiado LITERALMENTE a .github/workflows/comite.yml),
 # autorizados.txt y un README, y en el que NINGUNA sesión de IA tiene acceso. Los registros de un repositorio público son PÚBLICOS:
@@ -99,7 +102,11 @@ jobs:
           HA="$(sha256sum autorizados.txt | cut -d' ' -f1)"
           echo "ESTADO|HUELLA_FLUJO|$HF"
           echo "ESTADO|HUELLA_AUTORIZADOS|$HA"
-          grep -Eq "^${SHA_PEDIDO} ${HF}([[:space:]]|\$)" autorizados.txt || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
+          # v4 (autorización por MODO): exactamente UNA línea «<sha> <huella> <modo>-<n>» del modo pedido; cualquier línea mal formada
+          # para ese par sha+huella, o una duplicada, rechaza. Una línea «aislamiento-N» NO habilita «corrida» (ni al revés).
+          [[ "$MODO_PEDIDO" == aislamiento || "$MODO_PEDIDO" == corrida ]] || { echo "ESTADO|MODO_INVALIDO"; exit 64; }
+          AUT="$(awk -v s="$SHA_PEDIDO" -v h="$HF" -v m="$MODO_PEDIDO" '$1 == s && $2 == h { if (NF != 3 || $3 !~ /^(aislamiento|corrida)-[0-9]+$/ || $0 ~ /[\t\r]/) mal++; else if ($3 ~ ("^" m "-")) ok++ } END { print ok + 0, mal + 0 }' autorizados.txt)"
+          [[ "$AUT" == "1 0" ]] || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
           echo "ESTADO|AUTORIZADO"
           echo "flujo=$HF" >> "$GITHUB_OUTPUT"
           echo "autorizados=$HA" >> "$GITHUB_OUTPUT"
@@ -210,7 +217,11 @@ jobs:
           HF="$(sha256sum .github/workflows/comite.yml | cut -d' ' -f1)"
           HA="$(sha256sum autorizados.txt | cut -d' ' -f1)"
           [[ "$HF" == "$FLUJO_APROBADO" && "$HA" == "$AUTORIZADOS_APROBADO" ]] || { echo "ESTADO|HUELLA_CAMBIADA"; exit 64; }
-          grep -Eq "^${SHA_PEDIDO} ${HF}([[:space:]]|\$)" autorizados.txt || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
+          # v4 (autorización por MODO): exactamente UNA línea «<sha> <huella> <modo>-<n>» del modo pedido; cualquier línea mal formada
+          # para ese par sha+huella, o una duplicada, rechaza. Una línea «aislamiento-N» NO habilita «corrida» (ni al revés).
+          [[ "$MODO_PEDIDO" == aislamiento || "$MODO_PEDIDO" == corrida ]] || { echo "ESTADO|MODO_INVALIDO"; exit 64; }
+          AUT="$(awk -v s="$SHA_PEDIDO" -v h="$HF" -v m="$MODO_PEDIDO" '$1 == s && $2 == h { if (NF != 3 || $3 !~ /^(aislamiento|corrida)-[0-9]+$/ || $0 ~ /[\t\r]/) mal++; else if ($3 ~ ("^" m "-")) ok++ } END { print ok + 0, mal + 0 }' autorizados.txt)"
+          [[ "$AUT" == "1 0" ]] || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
           echo "ESTADO|AUTORIZADO"
       - uses: actions/setup-python@v5
         with:

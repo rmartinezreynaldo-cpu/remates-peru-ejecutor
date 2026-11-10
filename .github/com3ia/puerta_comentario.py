@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""puerta_comentario.py — PROPUESTA para el ejecutor (NO aplicada). Versión «sin firma».
+"""puerta_comentario.py v4 (autorización por MODO) — PROPUESTA para el ejecutor (NO aplicada). Versión «sin firma».
 
 Puerta común de las tres IA sin servidor ni clave: cada sesión publica un comentario en el
 issue «COM3IA solicitudes» del ejecutor y el flujo com3ia-puerta.yml lo evalúa con este
@@ -71,13 +71,21 @@ def _texto(v, patron):
     return isinstance(v, str) and patron.fullmatch(v) is not None
 
 
-def autorizado(autorizados, sha, huella):
-    """¿Hay una línea «<sha> <huella>» en autorizados.txt? Igual criterio que comite.yml."""
-    for linea in (autorizados or "").splitlines():
+ETIQUETA = re.compile(r"(aislamiento|corrida)-[0-9]+\Z")
+
+
+def autorizado(autorizados, sha, huella, modo="aislamiento"):
+    """v4 (autorización por MODO), mismo criterio que comite.yml v4: exactamente UNA línea «<sha> <huella> <modo>-<n>» del modo pedido y
+    ninguna línea mal formada para ese par sha+huella. La puerta solo despacha «aislamiento»: una línea «corrida-N» no le sirve."""
+    ok = mal = 0
+    for linea in (autorizados or "").split("\n"):  # como awk: solo «\n» separa líneas (un «\r» queda en la línea y la invalida)
         partes = linea.split()
         if len(partes) >= 2 and partes[0] == sha and partes[1] == huella:
-            return True
-    return False
+            if len(partes) != 3 or not ETIQUETA.match(partes[2]) or "\r" in linea or "\t" in linea:  # mismo criterio que awk
+                mal += 1
+            elif partes[2].startswith(modo + "-"):
+                ok += 1
+    return ok == 1 and mal == 0
 
 
 def evaluar(evento, titulo_issue, dueno, huella, autorizados):
