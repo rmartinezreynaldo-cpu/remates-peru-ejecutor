@@ -1,0 +1,115 @@
+# PUERTA COM3IA POR COMENTARIO, SIN FIRMA — PROPUESTA (docs/COM3IA_PUERTA_GITHUB_20261110.md).
+# Va en remates-peru-ejecutor como .github/workflows/com3ia-puerta.yml, junto con .github/com3ia/puerta_comentario.py y la
+# adaptación de comite.yml (comite.yml.propuesta). Las tres IA publican un comentario con la misma estructura en el issue
+# titulado «COM3IA solicitudes». No hay servidor, ni clave de firma, ni secretos propios: usa el GITHUB_TOKEN del ejecutor.
+# - Solo despacha pruebas de AISLAMIENTO (sin modelos ni gasto) y solo del propietario (author_association OWNER).
+# - Una solicitud activa a la vez: si ya hay una corrida en cola, en espera de aprobación o en curso, rechaza.
+# - NADA se ejecuta sin la aprobación del propietario en «Review deployments» (entorno comite-aislamiento).
+# - Nunca interpola el texto del comentario en «run:». Las respuestas con GITHUB_TOKEN no disparan flujos: sin bucles.
+# - Repositorio público: comentarios y respuestas son públicos; no contienen secretos.
+name: COM3IA - puerta por comentario
+on:
+  issue_comment:
+    types: [created]
+permissions: {}
+concurrency:
+  group: com3ia-puerta
+  cancel-in-progress: false
+jobs:
+  puerta:
+    # Filtro barato antes de arrancar un ejecutor; la validación real está en puerta_comentario.py.
+    if: >-
+      github.event.issue.title == 'COM3IA solicitudes' &&
+      !github.event.issue.pull_request &&
+      github.event.comment.author_association == 'OWNER' &&
+      startsWith(github.event.comment.body, 'COM3IA-PUERTA-V1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Evaluar el comentario (sin red ni secretos)
+        id: p
+        env:
+          DUENO: ${{ github.repository_owner }}
+        run: |
+          set -Eeuo pipefail
+          HF="$(sha256sum .github/workflows/comite.yml | cut -d' ' -f1)"
+          python3 -I -B .github/com3ia/puerta_comentario.py --evento "$GITHUB_EVENT_PATH" --titulo "COM3IA solicitudes" \
+            --dueno "$DUENO" --huella "$HF" --autorizados autorizados.txt --salida "$GITHUB_OUTPUT" || true
+      - name: Despachar comite.yml (solo aislamiento; una solicitud activa a la vez)
+        if: steps.p.outputs.decision == 'DESPACHAR'
+        id: d
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RQ: ${{ steps.p.outputs.solicitud_id }}
+          SHA_PEDIDO: ${{ steps.p.outputs.sha }}
+          CASO: ${{ steps.p.outputs.caso }}
+          TOPE: ${{ steps.p.outputs.tope }}
+        run: |
+          set -Eeuo pipefail
+          activos=0
+          for estado in queued in_progress waiting pending requested; do
+            n="$(gh api "repos/$REPO/actions/workflows/comite.yml/runs?status=$estado&per_page=1" --jq .total_count)"
+            [[ "$n" =~ ^[0-9]+$ ]] || n=1
+            activos=$((activos + n))
+          done
+          if [[ "$activos" != 0 ]]; then echo "estado=RECHAZO|YA_HAY_UNA_CORRIDA_ACTIVA" >> "$GITHUB_OUTPUT"; exit 0; fi
+          export TITULO="COM3IA $RQ $SHA_PEDIDO"
+          gh workflow run comite.yml --repo "$REPO" --ref main -f sha="$SHA_PEDIDO" -f modo=aislamiento \
+            -f caso="$CASO" -f tope="$TOPE" -f solicitud="$RQ"
+          run=""
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            sleep 5
+            run="$(gh api "repos/$REPO/actions/workflows/comite.yml/runs?per_page=20&event=workflow_dispatch" --jq 'first(.workflow_runs[] | select(.display_title == $ENV.TITULO) | .id) // empty')"
+            [[ -n "$run" ]] && break
+          done
+          if [[ "$run" =~ ^[0-9]{1,20}$ ]]; then echo "estado=DESPACHADO|$run" >> "$GITHUB_OUTPUT"
+          else echo "estado=DESPACHADO_SIN_RUN_VISIBLE" >> "$GITHUB_OUTPUT"; fi
+      - name: Consultar el cierre (solo lectura)
+        if: steps.p.outputs.decision == 'CIERRE'
+        id: c
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RQ: ${{ steps.p.outputs.solicitud_id }}
+          SHA_PEDIDO: ${{ steps.p.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          export TITULO="COM3IA $RQ $SHA_PEDIDO"
+          r="$(gh api "repos/$REPO/actions/workflows/comite.yml/runs?per_page=100" --jq '[.workflow_runs[] | select(.display_title == $ENV.TITULO and .actor.login == "github-actions[bot]")] | if length == 1 then "\(.[0].id)|\(.[0].status)|\(.[0].conclusion // "PENDIENTE")" elif length == 0 then "NO_ENCONTRADO" else "AMBIGUO" end')"
+          [[ "$r" =~ ^([0-9]{1,20}\|[a-z_]{1,20}\|[A-Za-z_]{1,20}|NO_ENCONTRADO|AMBIGUO)$ ]] || r="RESPUESTA_INVALIDA"
+          echo "estado=CIERRE|$r" >> "$GITHUB_OUTPUT"
+      - name: Responder en el mismo issue (solo valores validados)
+        if: always() && steps.p.outputs.decision != '' && steps.p.outputs.decision != 'IGNORAR'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          COMENTARIO: ${{ github.event.comment.id }}
+          DECISION: ${{ steps.p.outputs.decision }}
+          MOTIVO: ${{ steps.p.outputs.motivo }}
+          ACTOR_IA: ${{ steps.p.outputs.actor }}
+          NONCE: ${{ steps.p.outputs.nonce }}
+          RQ: ${{ steps.p.outputs.solicitud_id }}
+          SHA_PEDIDO: ${{ steps.p.outputs.sha }}
+          ESTADO_D: ${{ steps.d.outputs.estado }}
+          ESTADO_C: ${{ steps.c.outputs.estado }}
+        run: |
+          set -Eeuo pipefail
+          case "$DECISION" in
+            RECHAZO)   linea="ESTADO|RECHAZO|$MOTIVO" ;;
+            ACUSE)     linea="ESTADO|ACUSE|$ACTOR_IA|$NONCE" ;;
+            DESPACHAR) linea="ESTADO|${ESTADO_D:-DESPACHO_FALLIDO}|$RQ|$SHA_PEDIDO|$ACTOR_IA" ;;
+            CIERRE)    linea="ESTADO|${ESTADO_C:-CIERRE_FALLIDO}|$RQ|$SHA_PEDIDO" ;;
+            *)         exit 0 ;;
+          esac
+          [[ "$linea" =~ ^ESTADO\|[A-Za-z0-9_|-]{1,200}$ ]] || linea="ESTADO|RESPUESTA_INVALIDA"
+          printf 'COM3IA-PUERTA-V1 RESPUESTA\n%s\ncomentario: %s\n' "$linea" "$COMENTARIO" > "$RUNNER_TEMP/r.txt"
+          gh issue comment "$ISSUE" --repo "$REPO" --body-file "$RUNNER_TEMP/r.txt"
