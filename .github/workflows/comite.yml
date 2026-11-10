@@ -16,7 +16,13 @@
 #   COMITE_LECTURA_TOKEN: acceso detallado, solo lectura de «Contents» del repositorio privado, caducidad corta; COMITE_REPO:
 #   «dueño/repositorio» (enmascarado en el registro). Así la primera prueba, sin clave y sin gasto, ejerce el mismo mecanismo de
 #   aprobación que la corrida y la clave no está disponible para el trabajo en ese modo.
+# ADAPTACIÓN COM3IA «SIN FIRMA» (docs/COM3IA_PUERTA_GITHUB_20261110.md, decisión del propietario 10/11/2026): además del
+# propietario, acepta «github-actions[bot]» SOLO si lo despacha la puerta com3ia-puerta.yml de ESTE repositorio, SOLO en modo
+# aislamiento y con un identificador de solicitud RQ-… . No hay clave de firma: el control es la aprobación del propietario en
+# «Review deployments» (obligatoria en cada corrida, sin cambios), más autorizados.txt (SHA + huella de este archivo), main y
+# run_attempt=1. El modo «corrida» (modelos, gasto) sigue siendo exclusivo del lanzamiento manual del propietario.
 name: Comité - corrida aprobada por el propietario
+run-name: ${{ inputs.solicitud != '' && format('COM3IA {0} {1}', inputs.solicitud, inputs.sha) || 'Comité - corrida aprobada por el propietario' }}
 on:
   workflow_dispatch:
     inputs:
@@ -39,6 +45,11 @@ on:
         type: choice
         options: ["3", "2", "1"]
         default: "3"
+      solicitud:
+        description: "Solo para la puerta COM3IA: identificador RQ-… de la solicitud (vacío en el lanzamiento manual)"
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
 concurrency:
@@ -69,11 +80,20 @@ jobs:
           ACTOR: ${{ github.actor }}
           DUENO: ${{ github.repository_owner }}
           INTENTO: ${{ github.run_attempt }}
+          SOLICITUD: ${{ inputs.solicitud }}
+          MODO_PEDIDO: ${{ inputs.modo }}
         run: |
           exec 2>/dev/null
           set -Eeuo pipefail
           trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
-          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$ACTOR" == "$DUENO" && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          if [[ "$ACTOR" == "$DUENO" && -z "$SOLICITUD" ]]; then
+            echo "ESTADO|LANZADOR|PROPIETARIO"
+          elif [[ "$ACTOR" == "github-actions[bot]" && "$MODO_PEDIDO" == aislamiento && "$SOLICITUD" =~ ^RQ-[A-Z0-9]{10,26}$ ]]; then
+            echo "ESTADO|LANZADOR|PUERTA_COM3IA"
+          else
+            echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64
+          fi
           [[ "$SHA_PEDIDO" =~ ^[0-9a-f]{40}$ ]] || { echo "ESTADO|SHA_FORMATO"; exit 64; }
           HF="$(sha256sum .github/workflows/comite.yml | cut -d' ' -f1)"
           HA="$(sha256sum autorizados.txt | cut -d' ' -f1)"
@@ -172,11 +192,20 @@ jobs:
           INTENTO: ${{ github.run_attempt }}
           FLUJO_APROBADO: ${{ needs.huellas.outputs.flujo }}
           AUTORIZADOS_APROBADO: ${{ needs.huellas.outputs.autorizados }}
+          SOLICITUD: ${{ inputs.solicitud }}
+          MODO_PEDIDO: ${{ inputs.modo }}
         run: |
           exec 2>/dev/null
           set -Eeuo pipefail
           trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
-          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$ACTOR" == "$DUENO" && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          if [[ "$ACTOR" == "$DUENO" && -z "$SOLICITUD" ]]; then
+            echo "ESTADO|LANZADOR|PROPIETARIO"
+          elif [[ "$ACTOR" == "github-actions[bot]" && "$MODO_PEDIDO" == aislamiento && "$SOLICITUD" =~ ^RQ-[A-Z0-9]{10,26}$ ]]; then
+            echo "ESTADO|LANZADOR|PUERTA_COM3IA"
+          else
+            echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64
+          fi
           [[ "$SHA_PEDIDO" =~ ^[0-9a-f]{40}$ ]] || { echo "ESTADO|SHA_FORMATO"; exit 64; }
           HF="$(sha256sum .github/workflows/comite.yml | cut -d' ' -f1)"
           HA="$(sha256sum autorizados.txt | cut -d' ' -f1)"
