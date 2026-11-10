@@ -1,0 +1,128 @@
+# D-025 — EJECUTOR DEL DICTAMEN COMPLETO (BORRADOR, NO ACTIVO). Rama aislada + PR en borrador; nada de esto toca main ni comite.yml.
+# Solo MODO SINTÉTICO: ejecuta la autoprueba del ejecutor del comité (12 roles sintéticos, puntos de control, cancelación, caída y
+# reanudación, repetición idempotente, autorización adulterada) SIN modelos, SIN gasto, SIN red y SIN la clave de Anthropic.
+# MODO REAL (modelos pagados, despacho desde la aplicación, reporte a /api/committee/report, sellado y entrega): NO HABILITADO aquí. Se
+# rechaza antes de cualquier entorno o secreto. Para habilitarlo harán falta, con autorización expresa del propietario: auditoría
+# independiente de este flujo, entorno «comite-modelos» con su aprobación personal, clave de firma del comité y clave pública del propietario
+# como secretos del entorno, URL de reporte, y un libro de consumo en un repositorio privado con token de mínimo privilegio.
+# Igual que comite.yml: repositorio público => solo se imprimen líneas «ESTADO|…»; sin artefactos; autorización por huella en
+# autorizados-d025.txt (vacío = nada autorizado); solo main; solo el propietario; intento 1.
+name: Comité D-025 - autoprueba sintética del ejecutor
+run-name: Comité D-025 - autoprueba sintética
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit del comité (40 hexadecimales; debe figurar en autorizados-d025.txt junto a la huella de este flujo)"
+        required: true
+        type: string
+      modo:
+        description: "sintetico = autoprueba sin modelos ni gasto (real NO está habilitado en este flujo)"
+        type: choice
+        options: [sintetico, real]
+        default: sintetico
+permissions:
+  contents: read
+concurrency:
+  group: comite-d025
+  cancel-in-progress: false
+jobs:
+  huellas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      flujo: ${{ steps.h.outputs.flujo }}
+      autorizados: ${{ steps.h.outputs.autorizados }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Huellas y autorización (sin secretos)
+        id: h
+        env:
+          SHA_PEDIDO: ${{ inputs.sha }}
+          MODO_PEDIDO: ${{ inputs.modo }}
+          EVENTO: ${{ github.event_name }}
+          RAMA: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          DUENO: ${{ github.repository_owner }}
+          INTENTO: ${{ github.run_attempt }}
+        run: |
+          exec 2>/dev/null
+          set -Eeuo pipefail
+          trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
+          [[ "$EVENTO" == workflow_dispatch && "$RAMA" == refs/heads/main && "$INTENTO" == 1 ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          [[ "$ACTOR" == "$DUENO" ]] || { echo "ESTADO|LANZAMIENTO_NO_PERMITIDO"; exit 64; }
+          [[ "$MODO_PEDIDO" == sintetico ]] || { echo "ESTADO|MODO_REAL_NO_HABILITADO"; exit 64; }
+          [[ "$SHA_PEDIDO" =~ ^[0-9a-f]{40}$ ]] || { echo "ESTADO|SHA_FORMATO"; exit 64; }
+          HF="$(sha256sum .github/workflows/comite-d025.yml | cut -d' ' -f1)"
+          HA="$(sha256sum autorizados-d025.txt | cut -d' ' -f1)"
+          echo "ESTADO|HUELLA_FLUJO|$HF"
+          echo "ESTADO|HUELLA_AUTORIZADOS|$HA"
+          AUT="$(awk -v s="$SHA_PEDIDO" -v h="$HF" '$1 == s && $2 == h { if (NF != 3 || $3 !~ /^sintetico-[0-9]+$/ || $0 ~ /[\t\r]/) mal++; else ok++ } END { print ok + 0, mal + 0 }' autorizados-d025.txt)"
+          [[ "$AUT" == "1 0" ]] || { echo "ESTADO|NO_AUTORIZADO"; exit 64; }
+          echo "ESTADO|AUTORIZADO"
+          echo "flujo=$HF" >> "$GITHUB_OUTPUT"
+          echo "autorizados=$HA" >> "$GITHUB_OUTPUT"
+  autoprueba:
+    needs: huellas
+    runs-on: ubuntu-latest
+    environment: comite-aislamiento
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Revalidar la autorización (antes de usar ningún secreto)
+        env:
+          SHA_PEDIDO: ${{ inputs.sha }}
+          FLUJO_APROBADO: ${{ needs.huellas.outputs.flujo }}
+          AUTORIZADOS_APROBADO: ${{ needs.huellas.outputs.autorizados }}
+          MODO_PEDIDO: ${{ inputs.modo }}
+        run: |
+          exec 2>/dev/null
+          set -Eeuo pipefail
+          trap 'echo "ESTADO|ERROR_INESPERADO"' ERR
+          [[ "$MODO_PEDIDO" == sintetico ]] || { echo "ESTADO|MODO_REAL_NO_HABILITADO"; exit 64; }
+          [[ "$(sha256sum .github/workflows/comite-d025.yml | cut -d' ' -f1)" == "$FLUJO_APROBADO" && "$(sha256sum autorizados-d025.txt | cut -d' ' -f1)" == "$AUTORIZADOS_APROBADO" ]] || { echo "ESTADO|HUELLA_CAMBIADA"; exit 64; }
+          echo "ESTADO|AUTORIZADO"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Descargar el comité privado (sin imprimir nada)
+        env:
+          SHA_PEDIDO: ${{ inputs.sha }}
+          COMITE_LECTURA_TOKEN: ${{ secrets.COMITE_LECTURA_TOKEN }}
+          COMITE_REPO: ${{ secrets.COMITE_REPO }}
+        run: |
+          exec 2>/dev/null
+          umask 077
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$COMITE_LECTURA_TOKEN" | base64 -w0)"
+          { mkdir comite && git -C comite init -q \
+            && git -C comite fetch -q --depth 1 "https://github.com/${COMITE_REPO}.git" "$SHA_PEDIDO" \
+            && git -C comite checkout -q --detach FETCH_HEAD \
+            && [ "$(git -C comite rev-parse HEAD)" = "$SHA_PEDIDO" ]; } > /dev/null 2>&1 \
+            || { rm -rf comite; echo "ESTADO|ERROR_DESCARGA"; exit 66; }
+          echo "ESTADO|DESCARGA_OK"
+      - name: Dependencias
+        run: |
+          exec 2>/dev/null
+          python -m pip install --quiet --disable-pip-version-check jsonschema referencing cryptography > /dev/null 2>&1 \
+            || { rm -rf comite; echo "ESTADO|ERROR_DEPENDENCIAS"; exit 66; }
+          echo "ESTADO|DEPENDENCIAS_OK"
+      - name: Autoprueba sintética (solo líneas ESTADO; sin clave de Anthropic, sin red)
+        run: |
+          exec 2>/dev/null
+          set +e
+          python3 -I -B comite/ensayo/e2e/autoprueba_ejecutor.py 2>/dev/null | grep -E '^ESTADO\|[A-Z_]{3,40}\|(OK|FALLA)$|^ESTADO\|ERROR_INESPERADO$'
+          rc=${PIPESTATUS[0]}
+          rm -rf comite
+          echo "ESTADO|RC|$rc"
+          exit $rc
+      - name: Limpieza
+        if: always()
+        run: |
+          exec 2>/dev/null
+          rm -rf comite /tmp/d025-*
+          echo "ESTADO|LIMPIEZA"
