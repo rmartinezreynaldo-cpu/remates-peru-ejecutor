@@ -1,0 +1,5 @@
+# Autorizaciones del flujo comite-d025.yml (D-025). VACÍO A PROPÓSITO: mientras no haya una línea, el flujo responde ESTADO|NO_AUTORIZADO.
+# Formato (una línea por autorización, exactamente 3 campos): <sha del comité> <sha256 de .github/workflows/comite-d025.yml> <modo>-<n>
+# Modos: sintetico (sin modelos), sonda_libro (sin modelos, requiere el libro y su token), real (12 agentes con modelos: gasto).
+# Una línea de un modo NO habilita otro. «real» exige además el entorno comite-modelos con la aprobación personal del propietario,
+# la confirmación literal GASTAR-CON-MODELOS y que el aislamiento de comite.yml esté integrado y auditado (ver cabecera del flujo).
