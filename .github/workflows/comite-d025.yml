@@ -175,6 +175,7 @@ jobs:
           REPORT_BEARER: ${{ secrets.REPORT_BEARER }}
           RJ_CASO_ID: ${{ inputs.caso_id }}
           RJ_TOPE_ROL_USD: '0.50'
+          RJ_MODELO: 'claude-sonnet-5-5'                  # modelo FIJADO para el piloto (Hito 2); cambiarlo cambia la huella de este flujo
           RJ_RAIZ: ${{ github.workspace }}/comite
         run: |
           exec 2>/dev/null
