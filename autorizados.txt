@@ -1,2 +1,4 @@
 97aa5d1ae354892fcb7c09208415e9490c966b77 4b78cdf1fbe994ef6d44ba84f435f69f8316fdc6babdf637e639c27b8cc8a153 aislamiento-1
-97aa5d1ae354892fcb7c09208415e9490c966b77 4b78cdf1fbe994ef6d44ba84f435f69f8316fdc6babdf637e639c27b8cc8a153 corrida-1
+# EJ-01 (11/11/2026): REVOCADA la autorización «corrida-1» (modo con modelos) del comité 97aa5d1. Ya se usó el 10/11 y seguía siendo
+# reutilizable porque una línea no se consume al ejecutarse. Queda en el historial de git (9ab42fe); NO restaurarla ni hacer git revert:
+# una corrida con modelos exige una línea NUEVA, explícita y autorizada por el propietario para el SHA que se audite.
