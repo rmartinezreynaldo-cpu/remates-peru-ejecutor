@@ -1,0 +1,103 @@
+name: Verificar configuración de real-1 en staging
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verificar:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.actor == github.repository_owner &&
+      github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: comite-modelos
+    steps:
+      - name: Verificar configuración sin modelos
+        env:
+          COMITE_FIRMA_ID: ${{ secrets.COMITE_FIRMA_ID }}
+          COMITE_FIRMA_PEM_B64: ${{ secrets.COMITE_FIRMA_PEM_B64 }}
+          CK_HEX: ${{ secrets.CK_HEX }}
+          REGISTRO_JSON: ${{ secrets.REGISTRO_JSON }}
+          REPORT_URL: ${{ secrets.REPORT_URL }}
+          STAGING_PUBLICO: "{\"COMMITTEE_OWNER_KEY_ID\":\"propietario-20261119\",\"COMMITTEE_OWNER_PUBKEY\":\"ZWlfvopIouJ+I7Xw/+EGg8tD2Xr0dr60XfYNR7HnVpI=\",\"COMMITTEE_OWNER_X25519_PUB_PEM\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEA3PReNqcZB/B2D/Eiy3+J9Lt/39uugP2pttTCRy89oWc=\\n-----END PUBLIC KEY-----\",\"COMMITTEE_SIGNING_KEY_ID\":\"comite-20261119\",\"COMMITTEE_SIGNING_PUBKEY\":\"TF+4Fi6UymLuRzYg08RqtsGdaz1/h+e0tSy7StRwQkw=\"}"
+        run: |
+          python3 -I - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import subprocess
+
+          publicas = json.loads(os.environ["STAGING_PUBLICO"])
+          errores = []
+
+          def publica_raw(datos, formato, prefijo):
+              salida = subprocess.run(
+                  ["node", "-e", """
+                      const fs = require('node:fs');
+                      const crypto = require('node:crypto');
+                      const pem = fs.readFileSync(0);
+                      const key = process.argv[1] === 'privada'
+                        ? crypto.createPublicKey(crypto.createPrivateKey(pem))
+                        : crypto.createPublicKey(pem);
+                      process.stdout.write(key.export({type: 'spki', format: 'der'}));
+                  """, formato],
+                  input=datos, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                  check=True, timeout=5,
+              ).stdout
+              encabezado = bytes.fromhex(prefijo)
+              if not salida.startswith(encabezado) or len(salida) != len(encabezado) + 32:
+                  raise ValueError
+              return base64.b64encode(salida[len(encabezado):]).decode("ascii")
+
+          if os.environ["COMITE_FIRMA_ID"] != publicas["COMMITTEE_SIGNING_KEY_ID"]:
+              errores.append("ID_FIRMA_NO_COINCIDE")
+          try:
+              privada = base64.b64decode(os.environ["COMITE_FIRMA_PEM_B64"], validate=True)
+              derivada = publica_raw(privada, "privada", "302a300506032b6570032100")
+              if derivada != publicas["COMMITTEE_SIGNING_PUBKEY"]:
+                  errores.append("FIRMA_NO_COINCIDE_CON_STAGING")
+          except (ValueError, OSError, subprocess.SubprocessError):
+              errores.append("FIRMA_PRIVADA_INVALIDA")
+
+          if not re.fullmatch(r"[0-9a-fA-F]{64}", os.environ["CK_HEX"]):
+              errores.append("FORMATO_CUSTODIA_INVALIDO")
+          if os.environ["REPORT_URL"] != (
+              "https://remates-peru-staging-comite-20261113.rmartinez-reynaldo.workers.dev"
+              "/api/committee/report"
+          ):
+              errores.append("URL_REPORTES_NO_COINCIDE")
+
+          try:
+              claves = json.loads(os.environ["REGISTRO_JSON"])["claves"]
+              if not isinstance(claves, dict):
+                  raise ValueError
+              propietario = claves.get(publicas["COMMITTEE_OWNER_KEY_ID"])
+              comite = claves.get(publicas["COMMITTEE_SIGNING_KEY_ID"])
+              destinatario = publica_raw(
+                  publicas["COMMITTEE_OWNER_X25519_PUB_PEM"].encode(),
+                  "publica", "302a300506032b656e032100",
+              )
+              if not isinstance(propietario, dict) or (
+                  propietario.get("alg"), propietario.get("rol"), propietario.get("publica_b64")
+              ) != ("ed25519", "propietario", publicas["COMMITTEE_OWNER_PUBKEY"]):
+                  errores.append("REGISTRO_PROPIETARIO_NO_COINCIDE")
+              if not isinstance(comite, dict) or (
+                  comite.get("alg"), comite.get("rol"), comite.get("publica_b64")
+              ) != ("ed25519", "comite", publicas["COMMITTEE_SIGNING_PUBKEY"]):
+                  errores.append("REGISTRO_COMITE_NO_COINCIDE")
+              if not any(
+                  isinstance(k, dict) and (
+                      k.get("alg"), k.get("rol"), k.get("custodia"), k.get("publica_b64")
+                  ) == ("x25519", "destinatario", "dispositivo_propietario", destinatario)
+                  for k in claves.values()
+              ):
+                  errores.append("REGISTRO_DESTINATARIO_NO_COINCIDE")
+          except (TypeError, KeyError, ValueError, OSError, subprocess.SubprocessError):
+              errores.append("REGISTRO_O_REFERENCIA_PUBLICA_INVALIDA")
+
+          print("NO-GO · " + ", ".join(errores) if errores else "OK · CONFIGURACION_COINCIDE_CON_STAGING")
+          raise SystemExit(bool(errores))
+          PY
