@@ -4,3 +4,4 @@
 # Una línea de un modo NO habilita otro. «real» exige además el entorno comite-modelos con la aprobación personal del propietario,
 # la confirmación literal GASTAR-CON-MODELOS y que el aislamiento de comite.yml esté integrado y auditado (ver cabecera del flujo).
 86d02d8e484669c892f2b54fd0426d0bd63c7a9e 5b862a6462e7953293f7f2b7bced9831f3a20d6dc28627ce4dd0040e756a599c sintetico-1
+937da9a743e464a759d9e8bfd5b1f24da93a885c 4969923f0910ca0ac973cf74a0c0dc15170753ce5c9a82af55e5a0115c93bd89 real-1
