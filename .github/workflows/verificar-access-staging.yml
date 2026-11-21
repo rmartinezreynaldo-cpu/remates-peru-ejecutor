@@ -1,0 +1,73 @@
+name: Verificar Access de reportes en staging
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: verificar-access-staging
+  cancel-in-progress: false
+
+jobs:
+  verificar:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.actor == github.repository_owner &&
+      github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    environment: comite-modelos
+    steps:
+      - name: POST de comprobación en staging
+        env:
+          REPORT_ACCESS_CLIENT_ID: ${{ secrets.REPORT_ACCESS_CLIENT_ID }}
+          REPORT_ACCESS_CLIENT_SECRET: ${{ secrets.REPORT_ACCESS_CLIENT_SECRET }}
+        run: |
+          python3 -I - <<'PY'
+          import http.client
+          import json
+          import os
+
+          client_id = os.environ["REPORT_ACCESS_CLIENT_ID"]
+          secret = os.environ["REPORT_ACCESS_CLIENT_SECRET"]
+          if client_id != "dc4ef0eb6a85a4c892134b3441ff3444.access" or not secret:
+              raise SystemExit("SIN HTTP · CREDENCIALES_NO_DISPONIBLES_O_ID_INCORRECTO")
+
+          connection = http.client.HTTPSConnection(
+              "remates-peru-staging-comite-20261113.rmartinez-reynaldo.workers.dev",
+              timeout=15,
+          )
+          try:
+              connection.request(
+                  "POST",
+                  "/api/committee/report",
+                  body='{"ejecucion_id":"x"}',
+                  headers={
+                      "Content-Type": "application/json",
+                      "CF-Access-Client-Id": client_id,
+                      "CF-Access-Client-Secret": secret,
+                  },
+              )
+              response = connection.getresponse()
+              status = response.status
+              body = response.read(65536)
+          except (OSError, ValueError, UnicodeError, http.client.HTTPException):
+              raise SystemExit("SIN HTTP · ERROR_DE_CONEXION") from None
+          finally:
+              connection.close()
+
+          try:
+              payload = json.loads(body)
+          except (ValueError, UnicodeError):
+              payload = None
+          known_reasons = {
+              "EJECUCION_DESCONOCIDA", "CLAVE_DEL_COMITE_NO_CONFIGURADA",
+              "REPORTE_ILEGIBLE", "REPORTE_DEMASIADO_GRANDE",
+          }
+          observed = payload.get("motivo") if isinstance(payload, dict) else None
+          reason = observed if isinstance(observed, str) and observed in known_reasons else {
+              401: "NO_AUTORIZADO", 403: "ACCESO_DENEGADO",
+          }.get(status, "MOTIVO_NO_CONFIRMADO")
+          print(f"HTTP {status} · {reason}")
+          raise SystemExit(0 if status == 404 and reason == "EJECUCION_DESCONOCIDA" else 1)
+          PY
