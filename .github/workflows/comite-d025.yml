@@ -165,6 +165,7 @@ jobs:
           DESPACHO_B64: ${{ inputs.despacho_b64 }}
           COMITE_SHA: ${{ inputs.sha }}
           REGISTRO_JSON: ${{ secrets.REGISTRO_JSON }}
+          COMMITTEE_OWNER_PASSKEY: ${{ vars.COMMITTEE_OWNER_PASSKEY }}
           COMITE_FIRMA_PEM_B64: ${{ secrets.COMITE_FIRMA_PEM_B64 }}
           COMITE_FIRMA_ID: ${{ secrets.COMITE_FIRMA_ID }}
           CK_HEX: ${{ secrets.CK_HEX }}
@@ -182,6 +183,37 @@ jobs:
         run: |
           exec 2>/dev/null
           set +e
+          if [[ -n "${COMMITTEE_OWNER_PASSKEY:-}" ]]; then
+            registro_ampliado="$(python3 -I -B - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+
+          registro = json.loads(os.environ["REGISTRO_JSON"])
+          p = json.loads(os.environ["COMMITTEE_OWNER_PASSKEY"])
+          entrada = p["registro"]
+          host = "remates-peru-staging-comite-20261113.rmartinez-reynaldo.workers.dev"
+          publica = base64.b64decode(entrada["publica_b64"], validate=True)
+          clave_id = "passkey-" + hashlib.sha256(publica).hexdigest()[:32]
+          if (
+              set(entrada) != {"alg", "rol", "custodia", "publica_b64", "rp_id", "origenes"}
+              or len(publica) != 65 or publica[0] != 4 or p["claveId"] != clave_id
+              or entrada["alg"] != "webauthn-es256" or entrada["rol"] != "propietario"
+              or entrada["custodia"] != "dispositivo_propietario"
+              or entrada["rp_id"] != host or entrada["origenes"] != ["https://" + host]
+          ):
+              raise SystemExit(1)
+          claves = registro["claves"]
+          if not isinstance(claves, dict) or (clave_id in claves and claves[clave_id] != entrada):
+              raise SystemExit(1)
+          claves[clave_id] = entrada
+          print(json.dumps(registro, separators=(",", ":")))
+          PY
+            )" || { echo "ESTADO|REGISTRO_PASSKEY_INVALIDO"; exit 64; }
+            export REGISTRO_JSON="$registro_ampliado"
+            unset registro_ampliado COMMITTEE_OWNER_PASSKEY
+          fi
           npm install --silent -g @anthropic-ai/claude-code@2.1.319 > /dev/null 2>&1 || { echo "ESTADO|ERROR_DEPENDENCIAS"; rm -rf comite; exit 66; }
           export COMITE_DIR="$RJ_RAIZ" GITHUB_ACTIONS=true
           bash comite/ensayo/actions/corrida_real_d025.sh 2>/dev/null | grep -E '^ESTADO\|[A-Za-z0-9_|=.-]{3,120}$'
