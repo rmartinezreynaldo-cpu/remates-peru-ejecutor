@@ -91,7 +91,7 @@ jobs:
     needs: huellas
     runs-on: ubuntu-latest
     environment: ${{ inputs.modo == 'real' && 'comite-modelos' || inputs.modo == 'sonda_libro' && 'comite-libro' || 'comite-aislamiento' }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -157,6 +157,13 @@ jobs:
           rm -rf comite
           echo "ESTADO|RC|$rc"
           exit $rc
+      - name: Instalar Claude Code (sin ningún secreto en el entorno)
+        if: ${{ inputs.modo == 'real' }}
+        run: |
+          exec 2>/dev/null
+          npm install --silent -g @anthropic-ai/claude-code@2.1.319 > /dev/null 2>&1 \
+            || { rm -rf comite; echo "ESTADO|ERROR_DEPENDENCIAS"; exit 66; }
+          echo "ESTADO|CLAUDE_CODE_OK"
       - name: Corrida REAL de los 12 agentes (gasto; solo líneas ESTADO)
         if: ${{ inputs.modo == 'real' }}
         env:
@@ -214,7 +221,6 @@ jobs:
             export REGISTRO_JSON="$registro_ampliado"
             unset registro_ampliado COMMITTEE_OWNER_PASSKEY
           fi
-          npm install --silent -g @anthropic-ai/claude-code@2.1.319 > /dev/null 2>&1 || { echo "ESTADO|ERROR_DEPENDENCIAS"; rm -rf comite; exit 66; }
           export COMITE_DIR="$RJ_RAIZ" GITHUB_ACTIONS=true
           bash comite/ensayo/actions/corrida_real_d025.sh 2>/dev/null | grep -E '^ESTADO\|[A-Za-z0-9_|=.-]{3,120}$'
           rc=${PIPESTATUS[0]}
